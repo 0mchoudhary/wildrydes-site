@@ -1,173 +1,143 @@
-/*global WildRydes _config AmazonCognitoIdentity AWSCognito*/
+/*global WildRydes _config AmazonCognitoIdentity*/
 
-var WildRydes = window.WildRydes || {};
+const WildRydes = window.WildRydes || {};
 
-(function scopeWrapper($) {
-    var signinUrl = '/signin.html';
+(($) => {
+    const signinUrl = '/signin.html';
 
-    var poolData = {
+    const poolData = {
         UserPoolId: _config.cognito.userPoolId,
         ClientId: _config.cognito.userPoolClientId
     };
 
-    var userPool;
-
-    if (!(_config.cognito.userPoolId &&
-          _config.cognito.userPoolClientId &&
-          _config.cognito.region)) {
+    if (!poolData.UserPoolId || !poolData.ClientId || !_config.cognito.region) {
         $('#noCognitoMessage').show();
         return;
     }
 
-    userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
+    const userPool = new AmazonCognitoIdentity.CognitoUserPool(poolData);
 
-    if (typeof AWSCognito !== 'undefined') {
-        AWSCognito.config.region = _config.cognito.region;
-    }
-
-    WildRydes.signOut = function signOut() {
-        userPool.getCurrentUser().signOut();
+    WildRydes.signOut = () => {
+        const cognitoUser = userPool.getCurrentUser();
+        if (cognitoUser) {
+            cognitoUser.signOut();
+            localStorage.removeItem('authToken'); // Clear session
+            console.log('User signed out.');
+        }
     };
 
-    WildRydes.authToken = new Promise(function fetchCurrentAuthToken(resolve, reject) {
-        var cognitoUser = userPool.getCurrentUser();
+    WildRydes.authToken = new Promise((resolve, reject) => {
+        const cognitoUser = userPool.getCurrentUser();
+        if (!cognitoUser) return resolve(null);
 
-        if (cognitoUser) {
-            cognitoUser.getSession(function sessionCallback(err, session) {
-                if (err) {
-                    reject(err);
-                } else if (!session.isValid()) {
-                    resolve(null);
-                } else {
-                    resolve(session.getIdToken().getJwtToken());
-                }
-            });
-        } else {
-            resolve(null);
-        }
+        cognitoUser.getSession((err, session) => {
+            if (err) return reject(err);
+            if (!session.isValid()) return resolve(null);
+
+            const token = session.getIdToken().getJwtToken();
+            localStorage.setItem('authToken', token); // Store token locally
+            resolve(token);
+        });
     });
 
+    /* User Authentication Functions */
 
-    /*
-     * Cognito User Pool functions
-     */
-
-    function register(email, password, onSuccess, onFailure) {
-        var dataEmail = {
+    const register = (email, password, onSuccess, onFailure) => {
+        const attributeEmail = new AmazonCognitoIdentity.CognitoUserAttribute({
             Name: 'email',
             Value: email
-        };
-        var attributeEmail = new AmazonCognitoIdentity.CognitoUserAttribute(dataEmail);
+        });
 
-        userPool.signUp(toUsername(email), password, [attributeEmail], null,
-            function signUpCallback(err, result) {
-                if (!err) {
-                    onSuccess(result);
-                } else {
-                    onFailure(err);
-                }
-            }
-        );
-    }
+        userPool.signUp(toUsername(email), password, [attributeEmail], null, (err, result) => {
+            err ? onFailure(err) : onSuccess(result);
+        });
+    };
 
-    function signin(email, password, onSuccess, onFailure) {
-        var authenticationDetails = new AmazonCognitoIdentity.AuthenticationDetails({
+    const signin = (email, password, onSuccess, onFailure) => {
+        const authDetails = new AmazonCognitoIdentity.AuthenticationDetails({
             Username: toUsername(email),
             Password: password
         });
 
-        var cognitoUser = createCognitoUser(email);
-        cognitoUser.authenticateUser(authenticationDetails, {
-            onSuccess: onSuccess,
-            onFailure: onFailure
+        const cognitoUser = createCognitoUser(email);
+        cognitoUser.authenticateUser(authDetails, {
+            onSuccess,
+            onFailure
         });
-    }
+    };
 
-    function verify(email, code, onSuccess, onFailure) {
-        createCognitoUser(email).confirmRegistration(code, true, function confirmCallback(err, result) {
-            if (!err) {
-                onSuccess(result);
-            } else {
-                onFailure(err);
-            }
+    const verify = (email, code, onSuccess, onFailure) => {
+        createCognitoUser(email).confirmRegistration(code, true, (err, result) => {
+            err ? onFailure(err) : onSuccess(result);
         });
-    }
+    };
 
-    function createCognitoUser(email) {
-        return new AmazonCognitoIdentity.CognitoUser({
-            Username: toUsername(email),
-            Pool: userPool
-        });
-    }
+    const createCognitoUser = (email) => new AmazonCognitoIdentity.CognitoUser({
+        Username: toUsername(email),
+        Pool: userPool
+    });
 
-    function toUsername(email) {
-        return email.replace('@', '-at-');
-    }
+    const toUsername = (email) => email.replace('@', '-at-');
 
-    /*
-     *  Event Handlers
-     */
+    /* Event Handlers */
 
-    $(function onDocReady() {
+    $(() => {
         $('#signinForm').submit(handleSignin);
         $('#registrationForm').submit(handleRegister);
         $('#verifyForm').submit(handleVerify);
     });
 
-    function handleSignin(event) {
-        var email = $('#emailInputSignin').val();
-        var password = $('#passwordInputSignin').val();
+    const handleSignin = (event) => {
         event.preventDefault();
+        const email = $('#emailInputSignin').val();
+        const password = $('#passwordInputSignin').val();
+
         signin(email, password,
-            function signinSuccess() {
+            () => {
                 console.log('Successfully Logged In');
                 window.location.href = 'ride.html';
             },
-            function signinError(err) {
-                alert(err);
+            (err) => {
+                alert(`Login failed: ${err.message || err}`);
             }
         );
-    }
+    };
 
-    function handleRegister(event) {
-        var email = $('#emailInputRegister').val();
-        var password = $('#passwordInputRegister').val();
-        var password2 = $('#password2InputRegister').val();
-
-        var onSuccess = function registerSuccess(result) {
-            var cognitoUser = result.user;
-            console.log('user name is ' + cognitoUser.getUsername());
-            var confirmation = ('Registration successful. Please check your email inbox or spam folder for your verification code.');
-            if (confirmation) {
-                window.location.href = 'verify.html';
-            }
-        };
-        var onFailure = function registerFailure(err) {
-            alert(err);
-        };
+    const handleRegister = (event) => {
         event.preventDefault();
+        const email = $('#emailInputRegister').val();
+        const password = $('#passwordInputRegister').val();
+        const password2 = $('#password2InputRegister').val();
 
-        if (password === password2) {
-            register(email, password, onSuccess, onFailure);
-        } else {
-            alert('Passwords do not match');
+        if (password !== password2) {
+            return alert('Passwords do not match');
         }
-    }
 
-    function handleVerify(event) {
-        var email = $('#emailInputVerify').val();
-        var code = $('#codeInputVerify').val();
+        register(email, password,
+            (result) => {
+                console.log('User registered:', result.user.getUsername());
+                alert('Registration successful. Check your email for the verification code.');
+                window.location.href = 'verify.html';
+            },
+            (err) => {
+                alert(`Registration failed: ${err.message || err}`);
+            }
+        );
+    };
+
+    const handleVerify = (event) => {
         event.preventDefault();
+        const email = $('#emailInputVerify').val();
+        const code = $('#codeInputVerify').val();
+
         verify(email, code,
-            function verifySuccess(result) {
-                console.log('call result: ' + result);
-                console.log('Successfully verified');
-                alert('Verification successful. You will now be redirected to the login page.');
+            () => {
+                alert('Verification successful. Redirecting to login page.');
                 window.location.href = signinUrl;
             },
-            function verifyError(err) {
-                alert(err);
+            (err) => {
+                alert(`Verification failed: ${err.message || err}`);
             }
         );
-    }
-}(jQuery));
+    };
+})(jQuery);
