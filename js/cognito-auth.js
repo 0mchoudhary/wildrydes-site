@@ -21,7 +21,7 @@ const WildRydes = window.WildRydes || {};
         const cognitoUser = userPool.getCurrentUser();
         if (cognitoUser) {
             cognitoUser.signOut();
-            localStorage.removeItem('authToken'); // Clear session
+            localStorage.removeItem('authToken');
             console.log('User signed out.');
         }
     };
@@ -35,39 +35,70 @@ const WildRydes = window.WildRydes || {};
             if (!session.isValid()) return resolve(null);
 
             const token = session.getIdToken().getJwtToken();
-            localStorage.setItem('authToken', token); // Store token locally
+            localStorage.setItem('authToken', token);
             resolve(token);
         });
     });
 
-    /* User Authentication Functions */
-
-    const register = (email, password, onSuccess, onFailure) => {
-        const attributeEmail = new AmazonCognitoIdentity.CognitoUserAttribute({
-            Name: 'email',
-            Value: email
-        });
-
-        userPool.signUp(toUsername(email), password, [attributeEmail], null, (err, result) => {
-            err ? onFailure(err) : onSuccess(result);
-        });
+    /* Helper to compute SecretHash */
+    const computeSecretHash = async (username) => {
+        const clientId = _config.cognito.userPoolClientId;
+        const clientSecret = _config.cognito.clientSecret;
+        const msg = username + clientId;
+        const encoder = new TextEncoder();
+        const key = await crypto.subtle.importKey(
+            "raw", encoder.encode(clientSecret),
+            { name: "HMAC", hash: "SHA-256" },
+            false, ["sign"]
+        );
+        const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(msg));
+        return btoa(String.fromCharCode(...new Uint8Array(signature)));
     };
 
-    const signin = (email, password, onSuccess, onFailure) => {
-        const authDetails = new AmazonCognitoIdentity.AuthenticationDetails({
-            Username: toUsername(email),
-            Password: password
-        });
+    /* User Actions */
+    const register = async (email, password, onSuccess, onFailure) => {
+        try {
+            const attributeEmail = new AmazonCognitoIdentity.CognitoUserAttribute({
+                Name: 'email',
+                Value: email
+            });
 
-        const cognitoUser = createCognitoUser(email);
-        cognitoUser.authenticateUser(authDetails, {
-            onSuccess,
-            onFailure
-        });
+            const secretHash = await computeSecretHash(toUsername(email));
+            userPool.signUp(
+                toUsername(email),
+                password,
+                [attributeEmail],
+                { SecretHash: secretHash },
+                (err, result) => err ? onFailure(err) : onSuccess(result)
+            );
+        } catch (err) {
+            onFailure(err);
+        }
+    };
+
+    const signin = async (email, password, onSuccess, onFailure) => {
+        try {
+            const secretHash = await computeSecretHash(toUsername(email));
+
+            const authDetails = new AmazonCognitoIdentity.AuthenticationDetails({
+                Username: toUsername(email),
+                Password: password,
+                SecretHash: secretHash
+            });
+
+            const cognitoUser = createCognitoUser(email);
+            cognitoUser.authenticateUser(authDetails, {
+                onSuccess,
+                onFailure
+            });
+        } catch (err) {
+            onFailure(err);
+        }
     };
 
     const verify = (email, code, onSuccess, onFailure) => {
-        createCognitoUser(email).confirmRegistration(code, true, (err, result) => {
+        const cognitoUser = createCognitoUser(email);
+        cognitoUser.confirmRegistration(code, true, (err, result) => {
             err ? onFailure(err) : onSuccess(result);
         });
     };
@@ -79,8 +110,7 @@ const WildRydes = window.WildRydes || {};
 
     const toUsername = (email) => email.replace('@', '-at-');
 
-    /* Event Handlers */
-
+    /* Event Bindings */
     $(() => {
         $('#signinForm').submit(handleSignin);
         $('#registrationForm').submit(handleRegister);
@@ -94,7 +124,7 @@ const WildRydes = window.WildRydes || {};
 
         signin(email, password,
             () => {
-                console.log('Successfully Logged In');
+                console.log('Login successful');
                 window.location.href = 'ride.html';
             },
             (err) => {
@@ -115,8 +145,8 @@ const WildRydes = window.WildRydes || {};
 
         register(email, password,
             (result) => {
-                console.log('User registered:', result.user.getUsername());
-                alert('Registration successful. Check your email for the verification code.');
+                console.log('Registration success:', result.user.getUsername());
+                alert('Registration successful! Check your email for a verification code.');
                 window.location.href = 'verify.html';
             },
             (err) => {
@@ -132,7 +162,7 @@ const WildRydes = window.WildRydes || {};
 
         verify(email, code,
             () => {
-                alert('Verification successful. Redirecting to login page.');
+                alert('Verification successful! Redirecting to sign in.');
                 window.location.href = signinUrl;
             },
             (err) => {
